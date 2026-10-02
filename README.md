@@ -1,34 +1,28 @@
-# IPHW Rate Calculator — Multi-PC / Multi-User Web Version
+# IPHW Rate Calculator - Full Web Version
 
-## What this is
-A shared web calculator based on the supplied Excel workbook. Calculator A and B, country/zone mapping, Rate A/B, ODA city/postal matching, VAT, exchange rate, ODA base/per-KG and ODA fuel are stored centrally in SQLite.
+## Included calculation logic
+- Calculator A and Calculator B use separate Rate Master sheets.
+- Billing weight = ROUNDUP(input weight, 0).
+- Minimum billing weight is 10 KG.
+- Base Tariff = Billing Weight × Per KG Rate.
+- ODA Charge (USD) = MAX(ODA Base USD, Billing Weight × ODA Per KG USD) when a City or Postal ODA match exists.
+- ODA Charge (BDT) = ODA USD × Exchange Rate.
+- ODA Fuel Surcharge = ODA Charge (BDT) × ODA Fuel Surcharge rate.
+- Grand Total Without VAT = Base Tariff + ODA Charge (BDT) + ODA Fuel Surcharge.
+- VAT Amount = Grand Total Without VAT × VAT Rate.
+- Grand Total With VAT = Grand Total Without VAT + VAT Amount.
 
-## Multi-user behavior
-Run this app on ONE server/PC inside your office LAN or on a cloud/VPS. Other PCs open the server IP, e.g. `http://192.168.1.10:5000`. All users read the same database, so an admin rate update is shared immediately.
+## Render
+Build command: `pip install -r requirements.txt`
+Start command: `gunicorn --bind 0.0.0.0:$PORT app:app`
 
-## Start on Windows
-1. Install Python 3.11+.
-2. Open Command Prompt in this folder.
-3. `py -m venv venv`
-4. `venv\Scripts\activate`
-5. `pip install -r requirements.txt`
-6. Set an admin password (recommended): `set ADMIN_PASSWORD=YourStrongPassword`
-7. `py app.py`
-8. Server PC: `http://localhost:5000`
-9. Other PCs: `http://SERVER-IP:5000`
+Set environment variables:
+- ADMIN_PASSWORD = your admin password
+- SECRET_KEY = a long random secret
 
-Default admin password if you do not set one: `admin123` — change it before use.
+Default admin password if ADMIN_PASSWORD is not set: `admin123` (change it in production).
 
-## Updating rates
-Go to `/admin`, log in, and upload the updated `.xlsx` master file. The workbook should keep these sheet names:
-- Calculatore -A
-- Calculatore -B
-- Sheet2
-- Rate ; A
-- Rate; B
-- Sheet1
+## Rate updates
+Admin -> Upload Updated Excel Rate Master. The workbook should retain the original sheet names and structure.
 
-The upload replaces the shared Rate A/B, Zone and ODA master data and imports the current settings from Calculator A.
-
-## Production
-For many users, run behind a proper WSGI server (Waitress/Gunicorn) and HTTPS. For a larger organization, SQLite can be replaced with PostgreSQL/MySQL without changing the front-end concept.
+Note: SQLite on free/ephemeral hosting may not retain database changes after a service replacement/redeploy. For permanent online rate updates, connect a persistent database (e.g. PostgreSQL) later.
