@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rate Admin</title><link rel="stylesheet" href="/static/style.css"></head><body><header><h1>IPHW RATE ADMIN</h1><a href="/logout">Logout</a></header><main>
+{% with msgs=get_flashed_messages() %}{% if msgs %}<div class="flash">{% for m in msgs %}{{m}}{% endfor %}</div>{% endif %}{% endwith %}
+<section class="card"><h2>Upload Updated Excel Rate Master</h2><p>Upload the same workbook structure used by the calculator. The new Rate A/B, Zone and ODA data will become shared for every user.</p><form method="post" action="/admin/upload" enctype="multipart/form-data"><input type="file" name="rate_file" accept=".xlsx" required><button class="primary">Upload & Update All Users</button></form></section>
+<section class="card"><h2>Quick Settings</h2><form method="post" action="/admin/settings" class="grid2">
+<label>Exchange Rate (BDT/USD)<input name="exchange_rate" value="{{settings.get('exchange_rate','')}}"></label>
+<label>VAT Rate (e.g. 0.15)<input name="vat_rate" value="{{settings.get('vat_rate','')}}"></label>
+<label>ODA Fuel Surcharge<input name="oda_fuel" value="{{settings.get('oda_fuel','')}}"></label>
+<label>ODA Base USD<input name="oda_base_usd" value="{{settings.get('oda_base_usd','')}}"></label>
+<label>ODA Per KG USD<input name="oda_perkg_usd" value="{{settings.get('oda_perkg_usd','')}}"></label>
+<button class="primary">Save Settings</button></form></section>
+<section class="card"><h2>Recent Updates</h2><table><tr><th>Time</th><th>File</th><th>Status</th><th>Message</th></tr>{% for x in logs %}<tr><td>{{x.imported_at}}</td><td>{{x.filename}}</td><td>{{x.status}}</td><td>{{x.message}}</td></tr>{% endfor %}</table></section></main></body></html>

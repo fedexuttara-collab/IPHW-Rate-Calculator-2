@@ -1,0 +1,41 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>IPHW Rate Calculator</title><link rel="stylesheet" href="/static/style.css"></head><body>
+<header><div><h1>IPHW RATE CALCULATOR</h1><small>Calculator A / Calculator B • Shared Rate Master</small></div><a href="/admin">Admin / Rate Update</a></header>
+<main>
+<div class="tabs"><button class="tab active" onclick="setCalc('A',this)">Calculator A</button><button class="tab" onclick="setCalc('B',this)">Calculator B</button></div>
+<section class="grid">
+<div class="card"><h2>Shipment Input</h2>
+<label>Weight / Package Code<input id="weight" type="number" min="0" step="0.01" value="54"></label>
+<label>Destination Country<select id="country" onchange="countryChanged()"></select></label>
+<label id="postalLabel">Postal Code<input id="postal" placeholder="Postal code"></label>
+<label id="cityLabel">City <span class="muted">(Optional)</span><input id="city" placeholder="City"></label>
+<div id="odaHint" class="hint"></div>
+<button class="primary" onclick="calculate()">Calculate Rate</button><div id="err" class="error"></div></div>
+<div class="card"><h2>Automatic Calculation</h2><div id="result"><p class="muted">Enter shipment details and calculate.</p></div></div></section>
+<section class="card"><h2>Matched ODA Details</h2><div id="oda">No calculation yet.</div></section>
+</main>
+<script>
+let calcType='A', meta={countries:[],oda_map:{}};
+function setCalc(x,b){calcType=x;document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));b.classList.add('active');}
+function esc(x){return String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+function money(x){return Number(x||0).toLocaleString('en-BD',{minimumFractionDigits:2,maximumFractionDigits:2})+' BDT'}
+async function loadMeta(){let r=await fetch('/api/meta');meta=await r.json();let s=document.getElementById('country');s.innerHTML=meta.countries.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');countryChanged();}
+function countryChanged(){
+ const c=document.getElementById('country').value, info=meta.oda_map[c]||meta.oda_map[Object.keys(meta.oda_map).find(k=>k.toLowerCase()===c.toLowerCase())]||{};
+ const postal=!!info.Postal, city=!!info.City;
+ document.getElementById('postalLabel').classList.toggle('odaField',postal);
+ document.getElementById('cityLabel').classList.toggle('odaField',city);
+ document.getElementById('odaHint').textContent=(postal||city)?`ODA master available: ${postal?'Postal':''}${postal&&city?' + ':''}${city?'City':''}`:'No ODA master rows for this country';
+}
+async function calculate(){
+ document.getElementById('err').textContent='';
+ let body={calculator:calcType,weight:document.getElementById('weight').value,country:document.getElementById('country').value,postal:document.getElementById('postal').value,city:document.getElementById('city').value};
+ let r=await fetch('/api/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});let d=await r.json();
+ if(!r.ok){document.getElementById('err').textContent=d.error;return;}
+ document.getElementById('result').innerHTML=`<div class="status ${d.oda_status==='ODA'?'oda':'nooda'}">${d.oda_status}</div><table>
+ <tr><td>Calculator</td><td>${d.calculator}</td></tr><tr><td>Input Weight</td><td>${d.weight.toFixed(2)} KG</td></tr><tr><td>Billing Weight</td><td>${d.rounded_weight} KG</td></tr><tr><td>Destination Zone</td><td>${esc(d.zone)}</td></tr><tr><td>Per KG Rate</td><td>${money(d.per_kg_rate)}</td></tr><tr><td>Base Tariff</td><td>${money(d.base_tariff)}</td></tr>
+ <tr><td>ODA Charge</td><td>${d.oda_usd.toFixed(2)} USD / ${money(d.oda_bdt)}</td></tr><tr><td>ODA Fuel Surcharge</td><td>${money(d.oda_fuel_bdt)}</td></tr><tr class="subtotal"><td>GRAND TOTAL WITHOUT VAT</td><td><b>${money(d.subtotal_without_vat)}</b></td></tr>
+ <tr><td>VAT (${(d.vat_rate*100).toFixed(2)}%)</td><td>${money(d.vat_amount)}</td></tr><tr class="grand"><td>GRAND TOTAL WITH VAT</td><td><b>${money(d.grand_total_with_vat)}</b></td></tr></table>`;
+ document.getElementById('oda').innerHTML=d.matched_rows.length?d.matched_rows.map(x=>`<div>${esc(x.oda_type)} — ${esc(x.city||'')} ${x.postal_from!==null?`(${x.postal_from}-${x.postal_to})`:''}</div>`).join(''):'No matching ODA row found.';
+}
+loadMeta();
+</script></body></html>
