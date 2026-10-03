@@ -18,22 +18,20 @@
     </header>
 
     <main class="container">
-        <!-- Calculator Toggle Tabs -->
         <div class="calc-tabs">
             <button id="tabA" class="tab-btn active" onclick="switchCalc('A')">Calculator A</button>
             <button id="tabB" class="tab-btn" onclick="switchCalc('B')">Calculator B</button>
         </div>
 
         <div class="calc-grid">
-            <!-- Form Section -->
             <section class="card form-card">
                 <h2>Shipment Input</h2>
                 <form id="calcForm">
                     <input type="hidden" id="calc_type" name="calc_type" value="A">
 
                     <div class="form-group">
-                        <label for="weight">Weight / Package Code</label>
-                        <input type="text" id="weight" name="weight" placeholder="e.g. 54 or 54.5" required>
+                        <label for="weight">Weight / Package Code (KG)</label>
+                        <input type="number" step="any" id="weight" name="weight" placeholder="e.g. 54" required oninput="calculateRate()">
                     </div>
 
                     <div class="form-group">
@@ -59,28 +57,29 @@
                     </div>
 
                     <div id="oda_info_badge" class="oda-info-badge">
-                        <span id="oda_available_text">ODA Master: Checking...</span>
+                        <span id="oda_available_text">ODA Master: Select Country</span>
                     </div>
 
                     <button type="button" class="btn-primary" onclick="calculateRate()">Calculate Rate</button>
                 </form>
             </section>
 
-            <!-- Result Section -->
             <section class="card result-card">
                 <div class="result-header">
                     <h2>Calculation Result</h2>
                     <span id="calc_label" class="badge-calc">Calculator A</span>
                 </div>
 
-                <div id="loading" class="loading-spinner" style="display:none;">Calculating...</div>
-
                 <div id="resultContainer" class="result-table-container">
-                    <p class="placeholder-text">Enter shipment details and click "Calculate Rate" or enter city/postal code for automatic calculation.</p>
+                    <p class="placeholder-text">Enter shipment details to calculate rate.</p>
                 </div>
             </section>
         </div>
     </main>
+
+    <footer class="footer">
+        <p>Prepared by <strong>Amir Hamza</strong></p>
+    </footer>
 
     <script>
         function switchCalc(type) {
@@ -109,7 +108,7 @@
                 const res = await fetch(`/api/oda_suggestions?country=${encodeURIComponent(country)}`);
                 const data = await res.json();
 
-                if (data.cities && data.cities.length > 0) {
+                if (data.cities) {
                     data.cities.forEach(c => {
                         const opt = document.createElement('option');
                         opt.value = c;
@@ -117,7 +116,7 @@
                     });
                 }
 
-                if (data.postals && data.postals.length > 0) {
+                if (data.postals) {
                     data.postals.forEach(p => {
                         const opt = document.createElement('option');
                         opt.value = p;
@@ -125,20 +124,9 @@
                     });
                 }
 
-                const hasCities = data.cities && data.cities.length > 0;
-                const hasPostals = data.postals && data.postals.length > 0;
-
-                if (hasCities && hasPostals) {
-                    odaText.innerText = `ODA Master available: ${data.cities.length} Cities & ${data.postals.length} Postal Codes`;
-                } else if (hasCities) {
-                    odaText.innerText = `ODA Master available: ${data.cities.length} Cities`;
-                } else if (hasPostals) {
-                    odaText.innerText = `ODA Master available: ${data.postals.length} Postal Codes`;
-                } else {
-                    odaText.innerText = "ODA Master available: No ODA entries for this country";
-                }
+                odaText.innerText = `ODA Master available: ${data.cities.length} Cities / ${data.postals.length} Postals`;
             } catch (err) {
-                odaText.innerText = "ODA Master: Error loading suggestions";
+                odaText.innerText = "ODA Master: Checked";
             }
 
             calculateRate();
@@ -148,18 +136,13 @@
             const weight = document.getElementById('weight').value;
             const country = document.getElementById('country').value;
 
-            if (!weight || !country) {
-                return;
-            }
+            if (!weight || !country) return;
 
             const formData = new FormData(document.getElementById('calcForm'));
             const resContainer = document.getElementById('resultContainer');
             
             try {
-                const response = await fetch('/calculate', {
-                    method: 'POST',
-                    body: formData
-                });
+                const response = await fetch('/calculate', { method: 'POST', body: formData });
                 const data = await response.json();
 
                 if (data.error) {
@@ -169,19 +152,19 @@
 
                 resContainer.innerHTML = `
                     <table class="result-table">
-                        <tr><td><strong>Input Weight</strong></td><td>${data.input_weight} KG</td></tr>
-                        <tr><td><strong>Billing Weight</strong></td><td>${data.billing_weight} KG</td></tr>
-                        <tr><td><strong>Destination Zone</strong></td><td><strong>${data.zone}</strong></td></tr>
-                        <tr><td><strong>Per KG Rate</strong></td><td>${data.per_kg_rate} BDT</td></tr>
-                        <tr><td><strong>Base Tariff</strong></td><td>${data.base_tariff} BDT</td></tr>
+                        <tr><td>Input Weight</td><td>${data.input_weight} KG</td></tr>
+                        <tr><td>Billing Weight</td><td>${data.billing_weight} KG</td></tr>
+                        <tr><td>Destination Zone</td><td><strong>${data.zone}</strong></td></tr>
+                        <tr><td>Per KG Rate</td><td>${data.per_kg_rate} BDT</td></tr>
+                        <tr><td>Base Tariff</td><td>${data.base_tariff} BDT</td></tr>
                         <tr class="${data.is_oda ? 'oda-highlight' : ''}">
-                            <td><strong>ODA Charge</strong></td>
+                            <td>ODA Charge</td>
                             <td>${data.oda_charge_usd} USD / ${data.oda_charge_bdt} BDT (${data.oda_status})</td>
                         </tr>
-                        <tr><td><strong>ODA Fuel Surcharge</strong></td><td>${data.oda_fuel_bdt} BDT</td></tr>
-                        <tr class="total-row"><td><strong>GRAND TOTAL WITHOUT VAT</strong></td><td><strong>${data.grand_total_novat} BDT</strong></td></tr>
-                        <tr><td><strong>VAT (${data.vat_percent}%)</strong></td><td>${data.vat_bdt} BDT</td></tr>
-                        <tr class="grand-total-row"><td><strong>GRAND TOTAL WITH VAT</strong></td><td><strong>${data.grand_total_vat} BDT</strong></td></tr>
+                        <tr><td>ODA Fuel Surcharge</td><td>${data.oda_fuel_bdt} BDT</td></tr>
+                        <tr class="total-row"><td>GRAND TOTAL WITHOUT VAT</td><td><strong>${data.grand_total_novat} BDT</strong></td></tr>
+                        <tr><td>VAT (${data.vat_percent}%)</td><td>${data.vat_bdt} BDT</td></tr>
+                        <tr class="grand-total-row"><td>GRAND TOTAL WITH VAT</td><td><strong>${data.grand_total_vat} BDT</strong></td></tr>
                     </table>
                 `;
             } catch (err) {
