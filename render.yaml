@@ -1,9 +1,12 @@
 services:
   - type: web
     name: iphw-rate-calculator
-    env: python
+    runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
+      - key: ADMIN_PASSWORD
+        sync: false
       - key: SECRET_KEY
-        generateValue: true
+        sync: false
