@@ -138,12 +138,35 @@ def get_settings():
 def meta_data():
     c = db()
     countries = [r["country"] for r in c.execute("SELECT country FROM zones ORDER BY country COLLATE NOCASE")]
-    rows = c.execute("SELECT country, oda_type, COUNT(*) AS n FROM oda GROUP BY country, oda_type").fetchall()
+
+    # ODA counts plus the actual City/Postal master are returned dynamically
+    # from the database. This means a new Excel upload immediately refreshes
+    # the city suggestions and postal-range examples for all users.
+    rows = c.execute("""
+        SELECT country, city, postal_from, postal_to, oda_type
+        FROM oda
+        ORDER BY country COLLATE NOCASE, city COLLATE NOCASE, postal_from
+    """).fetchall()
+
     oda_map = {}
+    oda_details = {}
     for r in rows:
-        oda_map.setdefault(r["country"], {})[r["oda_type"]] = r["n"]
+        country = r["country"]
+        oda_map.setdefault(country, {})[r["oda_type"]] = oda_map.setdefault(country, {}).get(r["oda_type"], 0) + 1
+        details = oda_details.setdefault(country, {"city": [], "postal": []})
+
+        if r["oda_type"] == "City" and r["city"]:
+            city = str(r["city"]).strip()
+            if city and city not in details["city"]:
+                details["city"].append(city)
+        elif r["oda_type"] == "Postal":
+            details["postal"].append({
+                "from": r["postal_from"],
+                "to": r["postal_to"]
+            })
+
     c.close()
-    return countries, oda_map
+    return countries, oda_map, oda_details
 
 
 def calculate(payload):
@@ -236,8 +259,13 @@ def health():
 
 @app.route("/api/meta")
 def meta():
-    countries, oda_map = meta_data()
-    return jsonify({"countries": countries, "oda_map": oda_map, "settings": get_settings()})
+    countries, oda_map, oda_details = meta_data()
+    return jsonify({
+        "countries": countries,
+        "oda_map": oda_map,
+        "oda_details": oda_details,
+        "settings": get_settings()
+    })
 
 
 @app.route("/api/calculate", methods=["POST"])
