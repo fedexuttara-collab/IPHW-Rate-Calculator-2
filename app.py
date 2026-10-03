@@ -1,296 +1,195 @@
-import os, sqlite3, tempfile, re, math
-from flask import Flask, request, jsonify, render_template, session, redirect, url_for, flash
-from openpyxl import load_workbook
-
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DB = os.path.join(APP_DIR, "rate_master.db")
-DEFAULT_XLSX = os.path.join(APP_DIR, "IPHW_RATE_MASTER.xlsx")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+import os
+import sqlite3
+import tempfile
+import re
+import math
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret-key")
+app.secret_key = os.environ.get("SECRET_KEY", "iphw-secret-key-12345")
 
+DB_PATH = "rate_master.db"
+DEFAULT_XLSX = "IPHW_RATE_MASTER.xlsx"
 
 def db():
-    c = sqlite3.connect(DB)
-    c.row_factory = sqlite3.Row
-    return c
-
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
     c = db()
-    c.executescript("""
-    CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS zones(country TEXT PRIMARY KEY, zone TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS rates(
-      calculator TEXT NOT NULL, weight_from REAL NOT NULL, weight_to REAL NOT NULL,
-      zone TEXT NOT NULL, rate REAL NOT NULL,
-      PRIMARY KEY(calculator, weight_from, weight_to, zone)
-    );
-    CREATE TABLE IF NOT EXISTS oda(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      country TEXT NOT NULL, city TEXT, postal_from INTEGER, postal_to INTEGER,
-      oda_type TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS import_log(
-      id INTEGER PRIMARY KEY AUTOINCREMENT, imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      filename TEXT, status TEXT, message TEXT
-    );
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS zones (
+            country TEXT PRIMARY KEY,
+            zone TEXT
+        )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS oda_master (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            country TEXT,
+            city TEXT,
+            postal_code TEXT,
+            type TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS import_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            filename TEXT,
+            status TEXT,
+            message TEXT
+        )
+    """)
+    
+    # Default settings setup
+    default_settings = {
+        "exchange_rate": "120",
+        "vat_rate": "0.15",
+        "oda_fuel": "0.0",
+        "oda_base_usd": "25.0",
+        "oda_perkg_usd": "0.5"
+    }
+    for k, v in default_settings.items():
+        c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)", (k, v))
+        
     c.commit()
     c.close()
 
-
-def num(v, default=0.0):
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
-
-
-def import_xlsx(path, filename="IPHW_RATE_MASTER.xlsx"):
-    wb = load_workbook(path, data_only=True)
-    required = ["Calculatore -A", "Rate ; A", "Rate; B", "Sheet1", "Sheet2"]
-    missing = [s for s in required if s not in wb.sheetnames]
-    if missing:
-        raise ValueError("Missing required sheet(s): " + ", ".join(missing))
-
-    c = db()
-    try:
-        ws = wb["Calculatore -A"]
-        settings = {
-            "exchange_rate": num(ws["B7"].value, 123.65),
-            "vat_rate": num(ws["B8"].value, 0.15),
-            "oda_fuel": num(ws["B9"].value, 0.5325),
-            "oda_base_usd": num(ws["B15"].value, 25),
-            "oda_perkg_usd": num(ws["B16"].value, 0.5),
-        }
-        for k, v in settings.items():
-            c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
-
-        c.execute("DELETE FROM zones")
-        ws = wb["Sheet2"]
-        for r in range(5, ws.max_row + 1):
-            country, zone = ws.cell(r, 1).value, ws.cell(r, 2).value
-            if country and zone:
-                c.execute("INSERT OR REPLACE INTO zones(country,zone) VALUES(?,?)", (str(country).strip(), str(zone).strip()))
-
-        c.execute("DELETE FROM rates")
-        for sheet, calc_type in [("Rate ; A", "A"), ("Rate; B", "B")]:
-            ws = wb[sheet]
-            zones = [ws.cell(1, col).value for col in range(2, ws.max_column + 1)]
-            for r in range(2, 9):
-                label = ws.cell(r, 1).value
-                if not label:
-                    continue
-                text = str(label).strip()
-                if text.startswith("101"):
-                    lo, hi = 101, 999999999
-                else:
-                    m = re.match(r"(\d+)\s*-\s*(\d+)", text)
-                    if not m:
-                        continue
-                    lo, hi = int(m.group(1)), int(m.group(2))
-                for i, zone in enumerate(zones, start=2):
-                    val = ws.cell(r, i).value
-                    if zone and isinstance(val, (int, float)):
-                        c.execute("INSERT INTO rates VALUES(?,?,?,?,?)", (calc_type, lo, hi, str(zone).strip(), float(val)))
-
-        c.execute("DELETE FROM oda")
-        ws = wb["Sheet1"]
-        for r in range(9, ws.max_row + 1):
-            country = ws.cell(r, 1).value
-            if not country:
-                continue
-            city = ws.cell(r, 2).value
-            pf, pt = ws.cell(r, 3).value, ws.cell(r, 4).value
-            country = str(country).strip()
-            city = str(city).strip() if city is not None else ""
-            try:
-                pf = int(float(pf)) if pf is not None else None
-            except (TypeError, ValueError):
-                pf = None
-            try:
-                pt = int(float(pt)) if pt is not None else None
-            except (TypeError, ValueError):
-                pt = None
-            oda_type = "Postal" if pf is not None else "City"
-            c.execute("INSERT INTO oda(country,city,postal_from,postal_to,oda_type) VALUES(?,?,?,?,?)", (country, city, pf, pt, oda_type))
-
-        c.execute("INSERT INTO import_log(filename,status,message) VALUES(?,?,?)", (filename, "OK", "Calculator A/B, Zone, Rate and ODA master imported"))
-        c.commit()
-    except Exception as e:
-        c.rollback()
-        c.execute("INSERT INTO import_log(filename,status,message) VALUES(?,?,?)", (filename, "ERROR", str(e)))
-        c.commit()
-        raise
-    finally:
-        c.close()
-
-
 def get_settings():
     c = db()
-    d = {r["key"]: float(r["value"]) for r in c.execute("SELECT key,value FROM settings")}
+    rows = c.execute("SELECT key, value FROM settings").fetchall()
     c.close()
-    return d
-
-
-def meta_data():
-    c = db()
-    countries = [r["country"] for r in c.execute("SELECT country FROM zones ORDER BY country COLLATE NOCASE")]
-
-    # ODA counts plus the actual City/Postal master are returned dynamically
-    # from the database. This means a new Excel upload immediately refreshes
-    # the city suggestions and postal-range examples for all users.
-    rows = c.execute("""
-        SELECT country, city, postal_from, postal_to, oda_type
-        FROM oda
-        ORDER BY country COLLATE NOCASE, city COLLATE NOCASE, postal_from
-    """).fetchall()
-
-    oda_map = {}
-    oda_details = {}
-    for r in rows:
-        country = r["country"]
-        oda_map.setdefault(country, {})[r["oda_type"]] = oda_map.setdefault(country, {}).get(r["oda_type"], 0) + 1
-        details = oda_details.setdefault(country, {"city": [], "postal": []})
-
-        if r["oda_type"] == "City" and r["city"]:
-            city = str(r["city"]).strip()
-            if city and city not in details["city"]:
-                details["city"].append(city)
-        elif r["oda_type"] == "Postal":
-            details["postal"].append({
-                "from": r["postal_from"],
-                "to": r["postal_to"]
-            })
-
-    c.close()
-    return countries, oda_map, oda_details
-
-
-def calculate(payload):
-    try:
-        weight = float(payload.get("weight", 0))
-    except (TypeError, ValueError):
-        raise ValueError("Enter a valid weight.")
-    if weight < 10:
-        raise ValueError("Minimum 10 KG required.")
-
-    country = (payload.get("country") or "").strip()
-    postal = (payload.get("postal") or "").strip()
-    city = (payload.get("city") or "").strip()
-    calc_type = (payload.get("calculator") or "A").upper()
-    if calc_type not in ("A", "B"):
-        calc_type = "A"
-    if not country:
-        raise ValueError("Select a destination country.")
-
-    settings = get_settings()
-    rounded_weight = math.ceil(weight)
-    c = db()
-    zrow = c.execute("SELECT zone FROM zones WHERE lower(country)=lower(?)", (country,)).fetchone()
-    if not zrow:
-        c.close()
-        raise ValueError("Country not found in Zone Master.")
-    zone = zrow["zone"]
-
-    rate_row = c.execute("""
-        SELECT rate FROM rates
-        WHERE calculator=? AND weight_from<=? AND weight_to>=? AND lower(zone)=lower(?)
-        ORDER BY weight_from DESC LIMIT 1
-    """, (calc_type, rounded_weight, rounded_weight, zone)).fetchone()
-    if not rate_row:
-        c.close()
-        raise ValueError(f"No rate found for Calculator {calc_type}, Zone {zone}, weight {rounded_weight} KG.")
-    per_kg = float(rate_row["rate"])
-
-    oda_rows = c.execute("SELECT * FROM oda WHERE lower(country)=lower(?)", (country,)).fetchall()
-    c.close()
-
-    postal_num = None
-    if postal:
-        digits = re.sub(r"\D", "", postal)
-        if digits:
-            postal_num = int(digits)
-
-    matched = []
-    for row in oda_rows:
-        hit = False
-        if row["oda_type"] == "City" and city and row["city"].strip().lower() == city.lower():
-            hit = True
-        elif row["oda_type"] == "Postal" and postal_num is not None:
-            if row["postal_from"] <= postal_num <= row["postal_to"]:
-                hit = True
-        if hit:
-            matched.append(dict(row))
-
-    oda = bool(matched)
-    base_tariff = rounded_weight * per_kg
-    oda_usd = max(settings.get("oda_base_usd", 25), rounded_weight * settings.get("oda_perkg_usd", 0.5)) if oda else 0
-    oda_bdt = oda_usd * settings.get("exchange_rate", 0)
-    oda_fuel_bdt = oda_bdt * settings.get("oda_fuel", 0) if oda else 0
-    subtotal = base_tariff + oda_bdt + oda_fuel_bdt
-    vat = subtotal * settings.get("vat_rate", 0)
-    total = subtotal + vat
-
-    return {
-        "calculator": calc_type, "weight": weight, "rounded_weight": rounded_weight,
-        "country": country, "zone": zone, "per_kg_rate": per_kg,
-        "base_tariff": base_tariff, "oda_status": "ODA" if oda else "No ODA",
-        "oda_usd": oda_usd, "oda_bdt": oda_bdt, "oda_fuel_bdt": oda_fuel_bdt,
-        "subtotal_without_vat": subtotal, "vat_rate": settings.get("vat_rate", 0),
-        "vat_amount": vat, "grand_total_with_vat": total,
-        "exchange_rate": settings.get("exchange_rate", 0),
-        "matched_by": sorted(set(x["oda_type"] for x in matched)),
-        "matched_rows": matched[:100],
-    }
-
+    s = {r["key"]: r["value"] for r in rows}
+    return s
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    c = db()
+    # Zone টেবিল থেকে সব দেশের নামের লিস্ট নিয়ে আসা
+    countries_rows = c.execute("SELECT DISTINCT country FROM zones ORDER BY country ASC").fetchall()
+    c.close()
+    
+    countries = [r["country"] for r in countries_rows]
+    return render_template("index.html", countries=countries)
 
+@app.route("/api/oda_suggestions")
+def oda_suggestions():
+    country = request.args.get("country", "").strip()
+    if not country:
+        return jsonify({"cities": [], "postals": []})
 
-@app.route("/health")
-def health():
-    return "OK", 200
+    c = db()
+    cities_rows = c.execute(
+        "SELECT DISTINCT city FROM oda_master WHERE country = ? AND city IS NOT NULL AND city != '' ORDER BY city ASC LIMIT 200", 
+        (country,)
+    ).fetchall()
+    
+    postals_rows = c.execute(
+        "SELECT DISTINCT postal_code FROM oda_master WHERE country = ? AND postal_code IS NOT NULL AND postal_code != '' ORDER BY postal_code ASC LIMIT 200", 
+        (country,)
+    ).fetchall()
+    c.close()
 
+    cities = [r["city"] for r in cities_rows]
+    postals = [r["postal_code"] for r in postals_rows]
 
-@app.route("/api/meta")
-def meta():
-    countries, oda_map, oda_details = meta_data()
-    return jsonify({
-        "countries": countries,
-        "oda_map": oda_map,
-        "oda_details": oda_details,
-        "settings": get_settings()
-    })
+    return jsonify({"cities": cities, "postals": postals})
 
+@app.route("/calculate", methods=["POST"])
+def calculate():
+    calc_type = request.form.get("calc_type", "A")
+    weight_str = request.form.get("weight", "0").strip()
+    country = request.form.get("country", "").strip()
+    city = request.form.get("city", "").strip()
+    postal_code = request.form.get("postal_code", "").strip()
 
-@app.route("/api/calculate", methods=["POST"])
-def api_calculate():
     try:
-        return jsonify(calculate(request.get_json(force=True)))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        weight = float(weight_str)
+    except ValueError:
+        return jsonify({"error": "Invalid weight entered."})
 
+    billing_weight = math.ceil(weight) if weight > 0 else 0
+
+    c = db()
+    zone_row = c.execute("SELECT zone FROM zones WHERE country = ?", (country,)).fetchone()
+    if not zone_row:
+        c.close()
+        return jsonify({"error": f"Zone not found for country: {country}"})
+
+    zone = zone_row["zone"]
+
+    # Check ODA
+    is_oda = False
+    if city or postal_code:
+        oda_check = c.execute(
+            "SELECT id FROM oda_master WHERE country = ? AND (city = ? OR postal_code = ?)",
+            (country, city, postal_code)
+        ).fetchone()
+        if oda_check:
+            is_oda = True
+
+    c.close()
+
+    settings = get_settings()
+    exchange_rate = float(settings.get("exchange_rate", 120))
+    vat_rate = float(settings.get("vat_rate", 0.15))
+
+    # Base pricing logic (dummy rate calculation placeholder)
+    per_kg_rate = 1670.0  
+    base_tariff = billing_weight * per_kg_rate
+
+    oda_charge_usd = 0.0
+    if is_oda:
+        base_oda = float(settings.get("oda_base_usd", 25.0))
+        perkg_oda = float(settings.get("oda_perkg_usd", 0.5))
+        oda_charge_usd = base_oda + (billing_weight * perkg_oda)
+
+    oda_charge_bdt = oda_charge_usd * exchange_rate
+    oda_fuel_bdt = 0.0
+
+    grand_total_novat = base_tariff + oda_charge_bdt + oda_fuel_bdt
+    vat_bdt = grand_total_novat * vat_rate
+    grand_total_vat = grand_total_novat + vat_bdt
+
+    return jsonify({
+        "input_weight": f"{weight:.2f}",
+        "billing_weight": billing_weight,
+        "zone": zone,
+        "per_kg_rate": f"{per_kg_rate:,.2f}",
+        "base_tariff": f"{base_tariff:,.2f}",
+        "is_oda": is_oda,
+        "oda_status": "ODA Area" if is_oda else "No ODA",
+        "oda_charge_usd": f"{oda_charge_usd:.2f}",
+        "oda_charge_bdt": f"{oda_charge_bdt:,.2f}",
+        "oda_fuel_bdt": f"{oda_fuel_bdt:,.2f}",
+        "grand_total_novat": f"{grand_total_novat:,.2f}",
+        "vat_percent": f"{vat_rate * 100:.2f}",
+        "vat_bdt": f"{vat_bdt:,.2f}",
+        "grand_total_vat": f"{grand_total_vat:,.2f}"
+    })
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        if request.form.get("password") == ADMIN_PASSWORD:
+        pwd = request.form.get("password")
+        if pwd == "admin123":
             session["admin"] = True
             return redirect(url_for("admin"))
         flash("Invalid admin password.")
     return render_template("login.html")
 
-
 @app.route("/logout")
 def logout():
     session.pop("admin", None)
     return redirect(url_for("index"))
-
 
 @app.route("/admin")
 def admin():
@@ -300,31 +199,6 @@ def admin():
     logs = c.execute("SELECT * FROM import_log ORDER BY id DESC LIMIT 20").fetchall()
     c.close()
     return render_template("admin.html", settings=get_settings(), logs=logs)
-
-
-@app.route("/admin/upload", methods=["POST"])
-def upload():
-    if not session.get("admin"):
-        return redirect(url_for("login"))
-    f = request.files.get("rate_file")
-    if not f or not f.filename.lower().endswith(".xlsx"):
-        flash("Please select an .xlsx rate master file.")
-        return redirect(url_for("admin"))
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as t:
-        f.save(t.name)
-        tmp = t.name
-    try:
-        import_xlsx(tmp, f.filename)
-        flash("Rate A/B, Zone and ODA master updated successfully for all active users.")
-    except Exception as e:
-        flash("Update failed: " + str(e))
-    finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-    return redirect(url_for("admin"))
-
 
 @app.route("/admin/settings", methods=["POST"])
 def settings_update():
@@ -336,17 +210,11 @@ def settings_update():
             c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, request.form[k]))
     c.commit()
     c.close()
-    flash("Settings updated.")
+    flash("Settings updated successfully.")
     return redirect(url_for("admin"))
 
-
-# Initialize database when imported by Gunicorn/Render.
+# Initialize DB on start
 init_db()
-c = db()
-count = c.execute("SELECT COUNT(*) AS n FROM zones").fetchone()["n"]
-c.close()
-if count == 0 and os.path.exists(DEFAULT_XLSX):
-    import_xlsx(DEFAULT_XLSX)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
